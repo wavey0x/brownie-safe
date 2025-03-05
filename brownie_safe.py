@@ -93,7 +93,7 @@ class BrownieSafeBase(metaclass=ABCMeta):
         Subsequent nonce which accounts for pending transactions in the transaction service.
         """
         if self.use_gateway:
-            return get_safe_nonce(chain.id, self.address)
+            return get_safe_nonce_via_gateway(chain.id, self.address)
         else:
             results = self.transaction_service.get_transactions(self.address)
             return results[0]['nonce'] + 1 if results else 0
@@ -247,7 +247,7 @@ class BrownieSafeBase(metaclass=ABCMeta):
         """
         results = self.transaction_service._get_request(f'/api/v1/safes/{self.address}/multisig-transactions/').json()['results']
         if self.use_gateway:
-            nonce = get_safe_nonce(chain.id, self.address)
+            nonce = get_safe_nonce_via_gateway(chain.id, self.address)
         else:
             nonce = self.retrieve_nonce()
         transactions = [
@@ -417,16 +417,16 @@ def post_transaction_via_gateway(sender, safe_tx, signature):
     }
     response = requests.post(url, headers=headers, data=json.dumps(safe_tx_json))
     if response.status_code == 200:
-        print('Transaction proposed successfully.')
+        print(f'Transaction proposed successfully with nonce {safe_tx.safe_nonce}.')
     else:
         raise Exception(f'Error proposing transaction: {response.status_code}, {response.text}')
 
-def get_safe_nonce(chain_id, safe_address):
-    url = f'https://safe-client.safe.global/v1/chains/{chain_id}/safes/{safe_address}/'
+def get_safe_nonce_via_gateway(chain_id, safe_address, get_recommended=True):
+    url = f'https://safe-client.safe.global/v1/chains/{chain_id}/safes/{safe_address}/nonces'
     response = requests.get(url)
     if response.status_code == 200:
         data = response.json()
-        return data['nonce']
+        return data['recommendedNonce'] if get_recommended else data['currentNonce']
     else:
         raise Exception(f'Error fetching nonce: {response.status_code}, {response.text}')
     
