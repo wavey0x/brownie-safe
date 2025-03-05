@@ -451,7 +451,7 @@ def safe_tx_to_json(sender, safe_tx, signature):
         'refundReceiver': safe_tx.refund_receiver,
         'nonce': str(safe_tx.safe_nonce),
         'sender': sender,
-        'signature': '0x' + signature.hex(),
+        'signature': signature.hex(),
         'origin': 'wavey-script'
     }
     return json_str
