@@ -21,6 +21,7 @@ from safe_eth.safe.multi_send import MultiSend, MultiSendOperation, MultiSendTx
 from safe_eth.safe.safe_tx import SafeTx
 from safe_eth.safe.signatures import signature_split, signature_to_bytes
 from safe_eth.safe.api import TransactionServiceApi
+from safe_eth.safe.safe_signature import SafeSignature
 from hexbytes import HexBytes
 from trezorlib import ethereum, tools, ui
 from trezorlib.client import TrezorClient
@@ -227,8 +228,9 @@ class BrownieSafeBase(metaclass=ABCMeta):
         See also https://github.com/gnosis/safe-cli/blob/master/safe_cli/api/gnosis_transaction.py
         """
         if safe_tx.signatures:
-            signature = safe_tx.signatures[0]
-            signer = safe_tx.signers[0]
+            signatures = SafeSignature.parse_signature(self.signatures, self.safe_tx_hash)
+            signature = signatures[0].signature
+            signer = signatures[0].owner
         else:
             signature, signer = self.sign_transaction(safe_tx)
             signer = signer.address
