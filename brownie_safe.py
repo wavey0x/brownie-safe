@@ -134,7 +134,7 @@ class BrownieSafeBase(metaclass=ABCMeta):
         assert isinstance(signer, LocalAccount), 'Signer must be a name of brownie account or LocalAccount'
         return signer
 
-    def sign_transaction(self, safe_tx: SafeTx, signer=None) -> tuple[SafeTx, LocalAccount]:
+    def sign_transaction(self, safe_tx: SafeTx, signer=None) -> tuple[bytes, LocalAccount]:
         """
         Sign a Safe transaction with a private key account.
         """
@@ -251,11 +251,11 @@ class BrownieSafeBase(metaclass=ABCMeta):
         """
         Retrieve pending transactions from the transaction service.
         """
-        results = self.transaction_service._get_request(f'/api/v1/safes/{self.address}/multisig-transactions/').json()['results']
+        nonce = self.retrieve_nonce()
         if self.use_gateway:
-            nonce = get_safe_nonce_via_gateway(chain.id, self.address)
+            results = get_transactions_via_gateway(chain.id, self.address)
         else:
-            nonce = self.retrieve_nonce()
+            results = self.transaction_service._get_request(f'/api/v1/safes/{self.address}/multisig-transactions/').json()['results']
         transactions = [
             self.build_multisig_tx(
                 to=tx['to'],
@@ -426,6 +426,15 @@ def post_transaction_via_gateway(sender, safe_tx, signature):
         print(f'Transaction proposed successfully with nonce {safe_tx.safe_nonce}.')
     else:
         raise Exception(f'Error proposing transaction: {response.status_code}, {response.text}')
+
+def get_transactions_via_gateway(chain_id, safe_address):
+    url = f'https://safe-client.safe.global/v1/chains/{chain_id}/safes/{safe_address}/multisig-transactions/raw'
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        return data['results']
+    else:
+        raise Exception(f'Error fetching transactions: {response.status_code}, {response.text}')
 
 def get_safe_nonce_via_gateway(chain_id, safe_address, get_recommended=True):
     url = f'https://safe-client.safe.global/v1/chains/{chain_id}/safes/{safe_address}/nonces'
