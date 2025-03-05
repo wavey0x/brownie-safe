@@ -438,7 +438,7 @@ def get_safe_nonce_via_gateway(chain_id, safe_address, get_recommended=True):
     
 def safe_tx_to_json(sender, safe_tx, signature):
     signature = signature.hex()
-    signature = '0x' + signature if signature.startswith('0x') else signature
+    signature = signature if signature.startswith('0x') else '0x' + signature
     json_str = {
         'to': safe_tx.to,
         'value': str(safe_tx.value),
