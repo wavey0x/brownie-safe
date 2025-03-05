@@ -415,8 +415,6 @@ def post_transaction_via_gateway(sender, safe_tx, signature):
     headers = {
         'Content-Type': 'application/json',
     }
-    print(f'safe_tx_json: {safe_tx_json}')
-    print(f'\nurl: {url}')
     response = requests.post(url, headers=headers, data=json.dumps(safe_tx_json))
     if response.status_code == 200:
         print('Transaction proposed successfully.')
