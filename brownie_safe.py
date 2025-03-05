@@ -226,12 +226,15 @@ class BrownieSafeBase(metaclass=ABCMeta):
 
         See also https://github.com/gnosis/safe-cli/blob/master/safe_cli/api/gnosis_transaction.py
         """
-        signer = None
-        if not safe_tx.sorted_signers:
+        if safe_tx.signatures:
+            signature = safe_tx.signatures[0]
+            signer = safe_tx.signers[0]
+        else:
             signature, signer = self.sign_transaction(safe_tx)
+            signer = signer.address
 
         if self.use_gateway:
-            post_transaction_via_gateway(signer.address if signer is not None else safe_tx.signers[0], safe_tx, signature)
+            post_transaction_via_gateway(signer, safe_tx, signature)
         else:
             self.transaction_service.post_transaction(safe_tx)
 
