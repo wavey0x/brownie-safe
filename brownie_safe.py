@@ -1,6 +1,8 @@
 from abc import ABCMeta
 import os
 import re
+import requests
+import json
 from copy import copy
 from typing import Dict, List, Optional, Union
 import click
@@ -25,7 +27,6 @@ from trezorlib.client import TrezorClient
 from trezorlib.messages import EthereumSignMessage
 from trezorlib.transport import get_transport
 from functools import cached_property
-
 
 class ExecutionFailure(Exception):
     pass
@@ -91,8 +92,11 @@ class BrownieSafeBase(metaclass=ABCMeta):
         """
         Subsequent nonce which accounts for pending transactions in the transaction service.
         """
-        results = self.transaction_service.get_transactions(self.address)
-        return int(results[0]['nonce']) + 1 if results else 0
+        if self.use_gateway:
+            return get_safe_nonce(chain.id, self.address)
+        else:
+            results = self.transaction_service.get_transactions(self.address)
+            return results[0]['nonce'] + 1 if results else 0
 
     def tx_from_receipt(self, receipt: TransactionReceipt, operation: SafeOperationEnum = SafeOperationEnum.CALL, safe_nonce: int = None) -> SafeTx:
         """
@@ -129,12 +133,12 @@ class BrownieSafeBase(metaclass=ABCMeta):
         assert isinstance(signer, LocalAccount), 'Signer must be a name of brownie account or LocalAccount'
         return signer
 
-    def sign_transaction(self, safe_tx: SafeTx, signer=None) -> SafeTx:
+    def sign_transaction(self, safe_tx: SafeTx, signer=None) -> tuple[SafeTx, LocalAccount]:
         """
         Sign a Safe transaction with a private key account.
         """
         signer = self.get_signer(signer)
-        return safe_tx.sign(signer.private_key)
+        return safe_tx.sign(signer.private_key), signer
 
     def sign_with_trezor(self, safe_tx: SafeTx, derivation_path: str = "m/44'/60'/0'/0/0", use_passphrase: bool = False, force_eth_sign: bool = False) -> bytes:
         """
@@ -223,9 +227,12 @@ class BrownieSafeBase(metaclass=ABCMeta):
         See also https://github.com/gnosis/safe-cli/blob/master/safe_cli/api/gnosis_transaction.py
         """
         if not safe_tx.sorted_signers:
-            self.sign_transaction(safe_tx)
+            signature, signer = self.sign_transaction(safe_tx)
 
-        self.transaction_service.post_transaction(safe_tx)
+        if self.use_gateway:
+            post_transaction_via_gateway(signer.address, safe_tx, signature)
+        else:
+            self.transaction_service.post_transaction(safe_tx)
 
     def post_signature(self, safe_tx: SafeTx, signature: bytes):
         """
@@ -238,8 +245,11 @@ class BrownieSafeBase(metaclass=ABCMeta):
         """
         Retrieve pending transactions from the transaction service.
         """
-        results = self.transaction_service.get_transactions(self.address)
-        nonce = self.retrieve_nonce()
+        results = self.transaction_service._get_request(f'/api/v1/safes/{self.address}/multisig-transactions/').json()['results']
+        if self.use_gateway:
+            nonce = get_safe_nonce(chain.id, self.address)
+        else:
+            nonce = self.retrieve_nonce()
         transactions = [
             self.build_multisig_tx(
                 to=tx['to'],
@@ -383,8 +393,7 @@ PATCHED_SAFE_VERSIONS = {
     '1.4.1': BrownieSafeV141,
 }
 
-
-def BrownieSafe(address, base_url=None, multisend=None):
+def BrownieSafe(address, base_url=None, multisend=None, use_gateway=False):
     """
     Create an BrownieSafe from an address or a ENS name and use a default connection.
     """
@@ -396,6 +405,54 @@ def BrownieSafe(address, base_url=None, multisend=None):
     brownie_safe = PATCHED_SAFE_VERSIONS[version](address, ethereum_client)
     brownie_safe.transaction_service = TransactionServiceApi(ethereum_client.get_network(), ethereum_client, base_url)
     brownie_safe.multisend = MultiSend(ethereum_client, multisend, call_only=True)
-        
+    brownie_safe.use_gateway = use_gateway
     return brownie_safe
  
+
+def post_transaction_via_gateway(sender, safe_tx, signature):
+    safe_tx_json = safe_tx_to_json(sender, safe_tx, signature)
+    url = f'https://safe-client.safe.global/v1/chains/{chain.id}/transactions/{safe_tx.safe_address}/propose'
+    headers = {
+        'Content-Type': 'application/json',
+    }
+    print(f'safe_tx_json: {safe_tx_json}')
+    print(f'\nurl: {url}')
+    response = requests.post(url, headers=headers, data=json.dumps(safe_tx_json))
+    if response.status_code == 200:
+        print('Transaction proposed successfully.')
+    else:
+        raise Exception(f'Error proposing transaction: {response.status_code}, {response.text}')
+
+def get_safe_nonce(chain_id, safe_address):
+    url = f'https://safe-client.safe.global/v1/chains/{chain_id}/safes/{safe_address}/'
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        return data['nonce']
+    else:
+        raise Exception(f'Error fetching nonce: {response.status_code}, {response.text}')
+    
+def safe_tx_to_json(sender, safe_tx, signature):
+    json_str = {
+        'to': safe_tx.to,
+        'value': str(safe_tx.value),
+        'data': safe_tx.data.hex(),
+        'operation': safe_tx.operation,
+        'gasToken': safe_tx.gas_token,
+        'safeTxGas': str(0),
+        'baseGas': str(0),
+        'gasPrice': str(0),
+        'contractTransactionHash': safe_tx.safe_tx_hash.hex(),
+        'safeTxHash': safe_tx.safe_tx_hash.hex(),
+        'refundReceiver': safe_tx.refund_receiver,
+        'nonce': str(safe_tx.safe_nonce),
+        'sender': sender,
+        'signature': '0x' + signature.hex(),
+        'origin': 'wavey-script'
+    }
+    return json_str
+
+# TODO: Implement these...
+# def post_signature(self, safe_tx: SafeTx, signature: bytes):
+# def get_transactions(safe_address):
+# def pending_transactions(self) -> List[SafeTx]:
