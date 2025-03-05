@@ -437,6 +437,8 @@ def get_safe_nonce_via_gateway(chain_id, safe_address, get_recommended=True):
         raise Exception(f'Error fetching nonce: {response.status_code}, {response.text}')
     
 def safe_tx_to_json(sender, safe_tx, signature):
+    signature = signature.hex()
+    signature = '0x' + signature if signature.startswith('0x') else signature
     json_str = {
         'to': safe_tx.to,
         'value': str(safe_tx.value),
@@ -451,7 +453,7 @@ def safe_tx_to_json(sender, safe_tx, signature):
         'refundReceiver': safe_tx.refund_receiver,
         'nonce': str(safe_tx.safe_nonce),
         'sender': sender,
-        'signature': signature.hex(),
+        'signature': signature,
         'origin': 'wavey-script'
     }
     return json_str
