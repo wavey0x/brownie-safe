@@ -14,7 +14,7 @@ eth-brownie = ">=1.20.7"
 # safe-eth-py v6.0.0 renames gnosis to safe_eth
 # safe-eth-py v7.0.0 requires web3>=7.0.0
 safe-eth-py = ">=6.0.0,<7"
-trezor = ">=0.13.8"
+trezor = ">=0.13.8,<0.14"
 
 [tool.poetry.dev-dependencies]
 
