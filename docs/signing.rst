@@ -45,7 +45,7 @@ If you prefer to manage accounts outside Brownie, e.g. use a seed phrase, you ca
 Frame
 -----
 
-If you wish to use a hardware wallet, your best option is Frame_. It supports Ledger, Trezor, and Lattice. You can also use with with keystore accounts, they are called Ring Signers in Frame.
+If you wish to use a hardware wallet, your best option is Frame_. It supports Ledger and Lattice. You can also use with with keystore accounts, they are called Ring Signers in Frame.
 
 To sign, select an account in Frame and do this:
 
@@ -55,16 +55,6 @@ To sign, select an account in Frame and do this:
 
 
 Frame exposes an RPC connection at ``http://127.0.0.1:1248`` and exposes the currently selected account as ``eth_accounts[0]``. Brownie Safe sends the payload as ``eth_signTypedData_v4``, which must be supported by your signer device.
-
-Trezor
-------
-
-Alternative method for Trezor models and firmware versions which don't support EIP-712 using ``eth_sign``:
-
-.. code-block:: python
-
-    >>> safe.sign_with_trezor(safe_tx)
-
 
 .. _`transaction service`: https://safe-transaction.gnosis.io/
 .. _`a delegate`: https://safe-transaction.gnosis.io/

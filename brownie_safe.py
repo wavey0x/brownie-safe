@@ -20,10 +20,6 @@ from safe_eth.safe.safe_tx import SafeTx
 from safe_eth.safe.signatures import signature_split, signature_to_bytes
 from safe_eth.safe.api import TransactionServiceApi
 from hexbytes import HexBytes
-from trezorlib import ethereum, tools, ui
-from trezorlib.client import TrezorClient
-from trezorlib.messages import EthereumSignMessage
-from trezorlib.transport import get_transport
 from functools import cached_property
 
 
@@ -135,61 +131,6 @@ class BrownieSafeBase(metaclass=ABCMeta):
         """
         signer = self.get_signer(signer)
         return safe_tx.sign(signer.private_key)
-
-    def sign_with_trezor(self, safe_tx: SafeTx, derivation_path: str = "m/44'/60'/0'/0/0", use_passphrase: bool = False, force_eth_sign: bool = False) -> bytes:
-        """
-        Sign a Safe transaction with a Trezor wallet.
-
-        Defaults to no passphrase (and skips passphrase prompt) by default.
-        Uses on-device passphrase input if `use_passphrase` is truthy
-
-        Defaults to EIP-712 signatures on wallets & fw revisions that support it:
-        - TT fw >v2.4.3 (clear signing only)
-        - T1: not yet, and maybe only blind signing
-        Otherwise (or if `force_eth_sign` is truthy), use eth_sign instead
-        """
-        path = tools.parse_path(derivation_path)
-        transport = get_transport()
-        # if not using passphrase, then set env var so that prompt is skipped
-        if not use_passphrase:
-            os.environ["PASSPHRASE"] = ""
-        # default to on-device passphrase input if `use_passphrase` is truthy
-        client = TrezorClient(transport=transport, ui=ui.ClickUI(passphrase_on_host=not use_passphrase))
-        account = ethereum.get_address(client, path)
-
-        if force_eth_sign:
-            use_eip712 = False
-        elif client.features.model == 'T': # Trezor T
-            use_eip712 = (client.features.major_version, client.features.minor_version, client.features.patch_version) >= (2, 4, 3) # fw ver >= 2.4.3
-        else:
-            use_eip712 = False
-
-        if use_eip712:
-            trez_sig = ethereum.sign_typed_data(client, path, safe_tx.eip712_structured_data)
-            v, r, s = signature_split(trez_sig.signature)
-        else:
-            # have to use this instead of trezorlib.ethereum.sign_message
-            # because that takes a string instead of bytes
-            trez_sig = client.call(
-                EthereumSignMessage(
-                    address_n=path,
-                    message=safe_tx.safe_tx_hash
-                )
-            )
-            v, r, s = signature_split(trez_sig.signature)
-            # Gnosis adds 4 to `v` to denote an eth_sign signature
-            v += 4
-
-        signature = signature_to_bytes(v, r, s)
-        if account not in safe_tx.signers:
-            new_owners = safe_tx.signers + [account]
-            new_owner_pos = sorted(new_owners, key=lambda x: int(x, 16)).index(account)
-            safe_tx.signatures = (
-                safe_tx.signatures[: 65 * new_owner_pos]
-                + signature
-                + safe_tx.signatures[65 * new_owner_pos :]
-            )
-        return signature
 
     def sign_with_frame(self, safe_tx: SafeTx, frame_rpc="http://127.0.0.1:1248") -> bytes:
         """

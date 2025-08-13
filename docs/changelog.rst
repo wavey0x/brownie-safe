@@ -34,12 +34,16 @@ Changelog
 -----
 
 - execute transaction with frame
-- trezor eip-712 signing support
 
 0.4.0
 -----
 
-- trezor signing support
+- hardware wallet support via frame
+- submit signatures to transaction service
+- retrieve pending transactions from transaction service
+- execute signed transactions
+- convert confirmations to signatures
+- expanded documentation about signing
 
 0.3.0
 -----
