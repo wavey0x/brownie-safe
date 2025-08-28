@@ -3,6 +3,8 @@ import os
 import re
 import requests
 import json
+import time
+import warnings
 from copy import copy
 from typing import Dict, List, Optional, Union
 import click
@@ -37,6 +39,113 @@ class ApiError(Exception):
     pass
 
 
+class SafeTransactionServiceConfig:
+    """Configuration for Safe Transaction Service API."""
+    
+    # Chain code mapping per EIP-3770
+    CHAIN_CODE_MAP = {
+        1: 'eth',        # mainnet
+        10: 'oeth',      # optimism (was 'op' but Safe uses 'oeth')
+        8453: 'base',    # base
+        42161: 'arb1',   # arbitrum
+        100: 'gno',      # gnosis
+        137: 'matic',    # polygon (was 'pol' but Safe uses 'matic')
+        56: 'bnb',       # bsc (was 'bsc' but Safe uses 'bnb')
+    }
+    
+    def __init__(self):
+        self.api_key = os.getenv('SAFE_TRANSACTION_SERVICE_API_KEY')
+        self.base_url = os.getenv('SAFE_TX_SERVICE_BASE', 'https://api.safe.global/tx-service')
+        self.chain_override = os.getenv('SAFE_TX_SERVICE_CHAIN')
+        self.timeout = int(os.getenv('SAFE_TX_TIMEOUT_SEC', '20'))
+        self.retries = int(os.getenv('SAFE_TX_RETRIES', '3'))
+        self.allow_no_key = os.getenv('SAFE_TX_ALLOW_NO_KEY', '').lower() == 'true'
+        
+    def get_chain_code(self, chain_id: int) -> str:
+        """Get chain code for given chain ID with fallback."""
+        if self.chain_override:
+            return self.chain_override
+            
+        chain_code = self.CHAIN_CODE_MAP.get(chain_id)
+        if not chain_code:
+            warnings.warn(f"Unknown chain ID {chain_id}, defaulting to 'eth'")
+            return 'eth'
+        return chain_code
+
+
+class SafeTransactionServiceClient:
+    """Centralized HTTP client for Safe Transaction Service API."""
+    
+    def __init__(self, chain_id: int, config: SafeTransactionServiceConfig = None):
+        self.config = config or SafeTransactionServiceConfig()
+        self.chain_id = chain_id
+        self.chain_code = self.config.get_chain_code(chain_id)
+        self.base_url = f"{self.config.base_url}/{self.chain_code}"
+        
+        if not self.config.api_key and not self.config.allow_no_key:
+            raise ApiError(
+                "SAFE_TRANSACTION_SERVICE_API_KEY is required. "
+                f"Get your API key from https://api.safe.global and set the environment variable. "
+                f"For development, set SAFE_TX_ALLOW_NO_KEY=true to suppress this error."
+            )
+    
+    def _get_headers(self) -> Dict[str, str]:
+        """Get standard headers for API requests."""
+        headers = {
+            'Accept': 'application/json',
+            'User-Agent': 'brownie-safe/0.10.0'
+        }
+        
+        if self.config.api_key:
+            headers['Authorization'] = f'Bearer {self.config.api_key}'
+            
+        return headers
+    
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Make HTTP request with retry logic for transient failures."""
+        headers = self._get_headers()
+        kwargs.setdefault('headers', {}).update(headers)
+        kwargs.setdefault('timeout', self.config.timeout)
+        
+        for attempt in range(self.config.retries + 1):
+            try:
+                response = requests.request(method, url, **kwargs)
+                
+                if response.status_code == 401:
+                    raise ApiError(
+                        f"Unauthorized (401). Check your SAFE_TRANSACTION_SERVICE_API_KEY. "
+                        f"Get your API key from https://api.safe.global"
+                    )
+                
+                if response.status_code in {429, 502, 503, 504} and attempt < self.config.retries:
+                    # Exponential backoff for rate limits and server errors
+                    wait_time = (2 ** attempt) * 1.0
+                    time.sleep(wait_time)
+                    continue
+                
+                response.raise_for_status()
+                return response
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < self.config.retries:
+                    wait_time = (2 ** attempt) * 1.0
+                    time.sleep(wait_time)
+                    continue
+                raise ApiError(f"HTTP request failed after {self.config.retries} retries: {e}")
+        
+        return response
+    
+    def get(self, path: str, **kwargs) -> requests.Response:
+        """Make GET request to STS API."""
+        url = f"{self.base_url}{path}"
+        return self._request_with_retry('GET', url, **kwargs)
+    
+    def post(self, path: str, **kwargs) -> requests.Response:
+        """Make POST request to STS API."""
+        url = f"{self.base_url}{path}"
+        return self._request_with_retry('POST', url, **kwargs)
+
+
 class ContractWrapper:
     def __init__(self, account, instance):
         self.account = account
@@ -67,6 +176,9 @@ class BrownieSafeBase(metaclass=ABCMeta):
         # 2. instantiating contract instance with safe as an owner using __call__
         self.contract = ContractWrapper(self.account, self.contract)
         
+        # Initialize centralized STS client
+        self.sts_client = SafeTransactionServiceClient(chain.id)
+        
         if self.client == 'anvil':
             web3.manager.request_blocking('anvil_setNextBlockBaseFeePerGas', ['0x0'])
 
@@ -96,8 +208,16 @@ class BrownieSafeBase(metaclass=ABCMeta):
         if self.use_gateway:
             return get_safe_nonce_via_gateway(chain.id, self.address)
         else:
-            results = self.transaction_service.get_transactions(self.address)
-            return results[0]['nonce'] + 1 if results else 0
+            try:
+                response = self.sts_client.get(f'/api/v1/safes/{self.address}/multisig-transactions/')
+                results = response.json()['results']
+                return results[0]['nonce'] + 1 if results else 0
+            except (ApiError, KeyError) as e:
+                # Fallback to transaction service if available
+                if hasattr(self, 'transaction_service'):
+                    results = self.transaction_service.get_transactions(self.address)
+                    return results[0]['nonce'] + 1 if results else 0
+                raise e
 
     def tx_from_receipt(self, receipt: TransactionReceipt, operation: SafeOperationEnum = SafeOperationEnum.CALL, safe_nonce: int = None) -> SafeTx:
         """
@@ -238,13 +358,50 @@ class BrownieSafeBase(metaclass=ABCMeta):
         if self.use_gateway:
             post_transaction_via_gateway(signer, safe_tx, signature)
         else:
-            self.transaction_service.post_transaction(safe_tx)
+            try:
+                # Use centralized client to post transaction
+                tx_data = {
+                    'to': safe_tx.to,
+                    'value': str(safe_tx.value),
+                    'data': safe_tx.data.hex() if safe_tx.data else None,
+                    'operation': safe_tx.operation,
+                    'gasToken': safe_tx.gas_token,
+                    'safeTxGas': safe_tx.safe_tx_gas,
+                    'baseGas': safe_tx.base_gas,
+                    'gasPrice': str(safe_tx.gas_price),
+                    'refundReceiver': safe_tx.refund_receiver,
+                    'nonce': safe_tx.safe_nonce,
+                    'contractTransactionHash': safe_tx.safe_tx_hash.hex(),
+                    'signature': signature.hex() if isinstance(signature, bytes) else signature,
+                    'sender': signer,
+                }
+                self.sts_client.post(f'/api/v1/safes/{self.address}/multisig-transactions/', 
+                                   json=tx_data,
+                                   headers={'Content-Type': 'application/json'})
+            except ApiError as e:
+                # Fallback to transaction service if available
+                if hasattr(self, 'transaction_service'):
+                    self.transaction_service.post_transaction(safe_tx)
+                else:
+                    raise e
 
     def post_signature(self, safe_tx: SafeTx, signature: bytes):
         """
         Submit a confirmation signature to a transaction service.
         """
-        self.transaction_service.post_signatures(safe_tx.safe_tx_hash, signature)
+        try:
+            signature_data = {
+                'signature': signature.hex() if isinstance(signature, bytes) else signature
+            }
+            self.sts_client.post(f'/api/v1/multisig-transactions/{safe_tx.safe_tx_hash.hex()}/confirmations/',
+                               json=signature_data,
+                               headers={'Content-Type': 'application/json'})
+        except ApiError as e:
+            # Fallback to transaction service if available
+            if hasattr(self, 'transaction_service'):
+                self.transaction_service.post_signatures(safe_tx.safe_tx_hash, signature)
+            else:
+                raise e
 
     @property
     def pending_transactions(self) -> List[SafeTx]:
@@ -255,7 +412,15 @@ class BrownieSafeBase(metaclass=ABCMeta):
         if self.use_gateway:
             results = get_transactions_via_gateway(chain.id, self.address)
         else:
-            results = self.transaction_service._get_request(f'/api/v1/safes/{self.address}/multisig-transactions/').json()['results']
+            try:
+                response = self.sts_client.get(f'/api/v1/safes/{self.address}/multisig-transactions/')
+                results = response.json()['results']
+            except (ApiError, KeyError) as e:
+                # Fallback to transaction service if available
+                if hasattr(self, 'transaction_service'):
+                    results = self.transaction_service._get_request(f'/api/v1/safes/{self.address}/multisig-transactions/').json()['results']
+                else:
+                    raise e
         transactions = [
             self.build_multisig_tx(
                 to=tx['to'],
@@ -402,6 +567,12 @@ PATCHED_SAFE_VERSIONS = {
 def BrownieSafe(address, base_url=None, multisend=None, use_gateway=False):
     """
     Create an BrownieSafe from an address or a ENS name and use a default connection.
+    
+    Args:
+        address: Safe address or ENS name
+        base_url: Optional override for STS base URL (deprecated, use SAFE_TX_SERVICE_BASE env var)
+        multisend: Optional MultiSend address override
+        use_gateway: Use gateway instead of transaction service API
     """
     address = to_address(address)
     ethereum_client = EthereumClient(web3.provider.endpoint_uri)
@@ -409,7 +580,18 @@ def BrownieSafe(address, base_url=None, multisend=None, use_gateway=False):
     version = safe.get_version()
     
     brownie_safe = PATCHED_SAFE_VERSIONS[version](address, ethereum_client)
+    
+    # For backwards compatibility, still create transaction_service but also use centralized client
     brownie_safe.transaction_service = TransactionServiceApi(ethereum_client.get_network(), ethereum_client, base_url)
+    
+    # Override centralized client config if base_url is provided for compatibility
+    if base_url:
+        warnings.warn("base_url parameter is deprecated. Use SAFE_TX_SERVICE_BASE environment variable instead.", 
+                      DeprecationWarning, stacklevel=2)
+        config = SafeTransactionServiceConfig()
+        config.base_url = base_url
+        brownie_safe.sts_client = SafeTransactionServiceClient(chain.id, config)
+    
     brownie_safe.multisend = MultiSend(ethereum_client, multisend, call_only=True)
     brownie_safe.use_gateway = use_gateway
     return brownie_safe

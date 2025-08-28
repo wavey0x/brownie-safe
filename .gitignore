@@ -8,3 +8,4 @@ env/
 scripts/
 __pycache__/
 .venv/
+.claude
